@@ -1,0 +1,11 @@
+{
+  "name": "weather-ping",
+  "version": "1.0.0",
+  "description": "get temperature once per day and if different send e-mail to subscribers",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "alex@systemics.gr",
+  "license": "ISC"
+}
