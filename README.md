@@ -3,10 +3,6 @@
 
 Inside the project root directory execute
 
-```
-$ npm install
-```
-
 For promised flow run
 ```
 $ node promised_weather.js

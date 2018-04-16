@@ -5,7 +5,6 @@
 // lib and utils
 //
 const util = require("util"),
-  setTimeoutPromise = util.promisify(setTimeout),
   fs = require("fs"),
   http = require("http"),
   https = require("https"),
@@ -27,24 +26,26 @@ const IDENTITY_PATH = path.normalize("./crypto/sysaaa-weather-ping-871c7f76d7d5.
 //
 const APIID = "5378492d8248683e1e16176d90e68731",
   CITYID= "264371",
-  WEATHER_BASE_URL = "http://api.openweathermap.org/data/2.5/weather?";
+  WEATHER_BASE_URL = "http://api.openweathermap.org/data/2.5/weather?",
+  weatherUrl =  WEATHER_BASE_URL + "id=" +  CITYID + "&APPID=" + APIID;
 
 //
 // own variables
 //
-const weatherUrl =  WEATHER_BASE_URL + "id=" +  CITYID + "&APPID=" + APIID,
-  options = new URL(weatherUrl),
-  dataFileBaseName = ".weather.json",
-  lastDataFile = "last" + dataFileBaseName,
-  start = Date.now(),
+const start = Date.now(),
+  millimit = 12000,
+  globalTimeOut = 500,
+
   doneTasks = [],
   failedTasks = [],
   timeoutHits = [],
-  millimit = 12000,
   llogQueue = [],
-  libroot = process.cwd(),
-  dataDir = libroot + "/data/",
-  globalTimeOut = 500,
+
+  dataDir = process.cwd() + "/data/",
+  dataFileBaseName = ".weather.json",
+  nextLast = dataDir + Date.now().valueOf() + dataFileBaseName,
+  lastDataFile = dataDir + "last" + dataFileBaseName,
+
   toDoTasks = {
     getYesterdaysWeather: {
       isDone: function(){
@@ -79,34 +80,54 @@ const weatherUrl =  WEATHER_BASE_URL + "id=" +  CITYID + "&APPID=" + APIID,
         "getTodaysWeather"
       ]
     },
-    sendWeatherDiff: {
+    doMail: {
       isDone: function(){
-        return isDone("sendWeatherDiff")
+        return isDone("doMail")
       },
-      fn: sendWeatherDiff,
+      fn: doMail,
       requires:[
         "compareWeather"
       ]
     },
-    updateLastWeatherLink: {
+    unlinkLast: {
       isDone: function(){
-        return isDone("updateLastWeatherLink")
+        return isDone("unlinkLast")
       },
-      fn: updateLastWeatherLink,
+      fn: unlinkLast,
+      requires: []
+    },
+    linkLast: {
+      isDone: function(){
+        return isDone("linkLast")
+      },
+      fn: linkLast,
       requires: [
         "persistWeather"
       ]
-    },
+    }
   };
+
+const option = {
+  nextLast: nextLast,
+  dataDir: dataDir,
+  lastDataFile: lastDataFile,
+  weatherUrl: new URL(weatherUrl),
+  link: {
+    nextLast: nextLast,
+    last: lastDataFile
+  }
+};
 
 let statusCheckStarted = false,
   startLogging = false,
-  subscribers = ["xelinorg@gmail.com", "alexg@projectbeagle.com"];
+  subscribers = ["xelinorg@gmail.com"];
 
 
 //
 // util functions
 //
+function noop(){return arguments}
+
 function Base64EncodeUrl(str){
     return str.replace(/\+/g, "-").replace(/\//g, "_").replace(/\=+$/, "")
 }
@@ -137,7 +158,7 @@ function getKey(container){
   return Object.keys(container)[0]
 }
 
-function taskStatus(fn){
+function taskStatus(fn, option){
   const fname = fn.name;
 
   const requiredTasksKeys = toDoTasks[fname].requires;
@@ -157,7 +178,7 @@ function taskStatus(fn){
     }, []);
 
   if (!goodToGo || !goodToGo.length || goodToGo.length < requiredTasksKeys.length){
-    failedTasks.push([fn]);
+    failedTasks.push([fn, option]);
     return
   }
 
@@ -242,132 +263,89 @@ function extractWeatherDiff(weatherPair){
 
 }
 
-function llog(toLog){
+function getDateTime(payload){
+  return payload.dt
+}
+
+function getTemperature(payload){
+  return payload.main.temp
+}
+
+function getPersistOption(option, data){
+
+  let persistData = null;
+
+  if (hasTodaysWeather(data)){
+    persistData =  data.filter(function(task){
+      if (Object.keys(task)[0] === "getTodaysWeather"){
+        return true
+      }
+      return false
+    })
+  }
+
+  if (hasDataP(data)){
+    persistData = data[1].dataP
+  }
+
+  const persistOption = {
+    nextLast: option.link.nextLast,
+    data: persistData
+  }
+
+  return persistOption
+
+}
+
+function hasDataP(data){
+  if (data[1] && data[1].dataP){
+    return true
+  }
+  return false
+}
+
+function hasTodaysWeather(data){
+
+  const getTodaysWeather = data.filter(function(entry){
+    if (entry.getTodaysWeather){
+      return true
+    }
+    return false
+  })
+  if (getTodaysWeather && getTodaysWeather.length > 0 && getTodaysWeather[0].getTodaysWeather){
+    return true
+  }
+  return false
+}
+
+function dataToMailBody(data){
+  return data.filter(function(entry){
+    if (entry.dataP){
+      return true
+    }
+    return false
+  })[0].dataP || "weather-ping default mail"
+}
+
+function llog(){
 
   const logOut = llogQueue.splice( 0, llogQueue.length )
 
   if (startLogging && !logOut){
-    return console.log(toLog)
+    return Array.from(arguments).forEach(function(arg){
+      console.log(arg)
+    })
   }
 
-  logOut.push(toLog)
+  Array.from(arguments).forEach(function(arg){
+    logOut.push(arg)
+  })
 
   return logOut.forEach(function(l){
     console.log(l)
   })
 
 }
-
-
-//
-// filesystem read/write
-//
-function readFromFile(lastFileName, fn, cb){
-
-  const fname = fn.name;
-
-  return fs.readFile(lastFileName, function(err, data){
-
-    if (err){
-      const sheduled = failedTasks.filter(function(ft){return ft.name === fname }).length === 1;
-      !sheduled && failedTasks.push([fn]);
-      return err
-      //throw err
-    }
-
-    if(!err){
-      cb(data)
-    }
-
-  })
-
-}
-
-function writeToFile(filename, filecontent, fn){
-
-  const data = Object(filecontent);
-  const fname = fn.name;
-  return fs.writeFile(filename, JSON.stringify(data), function(err){
-
-    if (err){
-      const sheduled = failedTasks.filter(function(ft){return ft.name === fname }).length === 1
-      !sheduled && failedTasks.push([fn])
-      return err
-      //throw err
-    }
-
-    if(!err){
-      const task = {};
-      task[fname] = {
-        filecontent: filecontent,
-        filename: filename
-      }
-      return doneTasks.push(task)
-    }
-
-  })
-
-}
-
-
-//
-// filesystem unlinking/linking
-//
-function unlinkLast(fn, unlinkHandler){
-  return fs.stat(addDataDir(lastDataFile), function(err, data){
-    if(err){
-      return unlinkHandler({err: err})
-    }
-    return fs.unlink(addDataDir(lastDataFile), function(err, data){
-      if(err){
-        return unlinkHandler({err: err})
-      }
-      return unlinkHandler({err: err, data: data})
-    })
-  })
-}
-
-function linkLast(newWeatherFile, fn, linkHandler ){
-  const fname = fn.name;
-  const linkFile = addDataDir(lastDataFile);
-
-  return fs.symlink(newWeatherFile, linkFile, function(err, data){
-    if(err){
-      return linkHandler({err: err})
-    }
-    return linkHandler({err: err, data: data})
-  });
-}
-
-
-//
-// http request handlers
-//
-function httpResponseHandler(res){
-
-  const data = [];
-
-  res.on("data", function(chunk){
-    data.push(chunk)
-  });
-
-  res.on("end", function(){
-
-    const res = data.reduce(function(bucket, buf){
-      return bucket.concat(buf.toString())
-    }, "");
-
-    const weatherPayload = JSON.parse(res.toString());
-
-    doneTasks.push({getTodaysWeather: weatherPayload})
-
-  });
-}
-
-function httpErrorHandler(err){
-  llog("problem with request: " + err.message);
-};
-
 
 //
 // mailing functions
@@ -485,7 +463,6 @@ function getBearer(jwtFull, cb){
   });
 
  req.on("error", function(e){
-    console.error("problem with request: " + e.message);
     cb(e)
   });
 
@@ -563,7 +540,6 @@ function sendMail(bearer, msg, cb) {
    });
 
   req.on("error", function(e) {
-     console.error("problem with request: " + e.message);
      cb(e)
    });
 
@@ -572,39 +548,9 @@ function sendMail(bearer, msg, cb) {
 
 }
 
-function doMail(msg, cb){
-
-  const serializedMsg = JSON.stringify(msg);
-
-  if (BEARER.length > 0){
-    return sendMail(BEARER[0], serializedMsg, cb)
-  }
-
-  return encodeJWT(function(err, jwt){
-    if (!err){
-
-      return getBearer(jwt, function(err, bearer){
-
-        if (!err){
-          BEARER.push(JSON.parse(bearer).access_token)
-          return sendMail(BEARER[0], serializedMsg, cb)
-        }
-
-        return cb("getBearer failed")
-
-      })
-
-    }
-
-    return cb("doMail failed")
-
-  })
-
-}
-
 
 //
-// these are the loop tools
+// these are the loop tools for the timeout flow
 //
 function stopRunning(){
 
@@ -612,25 +558,23 @@ function stopRunning(){
 
 }
 
-function reRun(fn, options){
+function reRun(task){
 
+  if (typeof task[0] === "function" || (typeof task[1] === "object" && task.length > 1)){
+    failedTasks.push([task[0], task[1]]);
 
+    const toReRun = new Set(failedTasks.splice(0, failedTasks.length));
 
-  if (typeof fn !== "function" || (typeof fn === "object" && fn.length > 1)){
+    return backToTheFuture(toReRun)
+  }else{
     llog("reRun fn is not usable... returning ");
     return
   }
 
-  failedTasks.push(fn);
-
-  const toReRun = new Set(failedTasks.splice(0, failedTasks.length));
-  //console.log(toReRun)
-
-  return backToTheFuture(toReRun)
-
 }
 
 function backToTheFuture(stack){
+
   return stack.forEach(function(ft){
 
     const ftname = typeof ft === "function" ? ft.name : ft[0].name
@@ -651,16 +595,14 @@ function backToTheFuture(stack){
 
 }
 
-function statusCheck(options){
+function statusCheck(option){
 
   const notDoneTasks = toDoTasks;
 
-  const fn = statusCheck;
-
   if (doneTasks.length < Object.entries(notDoneTasks).length && !stopRunning()){
 
-    brain(notDoneTasks)
-    return reRun(fn, options)
+    timeBrain(notDoneTasks, option)
+    return reRun([statusCheck, option])
 
   } else {
     llog(doneTasks);
@@ -672,179 +614,392 @@ function statusCheck(options){
 
 }
 
-function brain(toDoTasks){
-  // if is loop run, start all tasks that have their requirements fullfilled
-  if (statusCheckStarted){
+function zeroPass(toDoTasks, option){
 
-    return Object.entries(toDoTasks)
-      .reduce(function(bucket, remaining){
-
-        if (hasRequirements(remaining) && nonBlocking(remaining) && notRunning(remaining)){
-          failedTasks.push(remaining[1].fn);
-          bucket.push(remaining)
-        }
-
-        return bucket
-
-      }, [])
-
-  }
-
-  // if is first run do task without requirements
   return Object.entries(toDoTasks)
-    .reduce(function(bucket, ndt){
+    .reduce(function(bucket, tdt){
 
-      if (!ndt[1].requires.length > 0){
-        failedTasks.push(ndt[1].fn);
+      if (!tdt[1].requires.length > 0){
+        failedTasks.push([tdt[1].fn, option]);
         return bucket
       }
 
-      bucket.push(ndt);
+      bucket.push(tdt);
       return bucket
 
     }, [])
 
 }
 
+function nthPass(toDoTasks, option){
+
+  return Object.entries(toDoTasks)
+    .reduce(function(bucket, remaining){
+
+      if (hasRequirements(remaining) && nonBlocking(remaining) && notRunning(remaining)){
+        failedTasks.push([remaining[1].fn, option]);
+        bucket.push(remaining)
+      }
+
+      return bucket
+
+    }, [])
+
+}
+
+function timeBrain(toDoTasks, option){
+  // if is loop run, start all tasks that have their requirements fullfilled
+  if (statusCheckStarted){
+    return nthPass(toDoTasks, option)
+  }
+  // if is first run do task without requirements
+  return zeroPass(toDoTasks, option)
+
+}
+
+
+//
+// promised brain flow
+//
+function promisifyAll(){
+  return {
+    persistWeatherP: util.promisify(persistWeather),
+    unlinkLastP: util.promisify(unlinkLast),
+    linkLastP: util.promisify(linkLast),
+    getTodaysWeatherP: util.promisify(getTodaysWeather),
+    getYesterdaysWeatherP: util.promisify(getYesterdaysWeather),
+    doMailP: util.promisify(doMail)
+  }
+}
+
+function promisedBrain(option){
+
+  const p = promisifyAll();
+
+  Promise.all([
+    p.getTodaysWeatherP(option),
+    p.getYesterdaysWeatherP(option)
+  ])
+  .then(
+    function(data){
+      const persistOption = getPersistOption(option, data);
+      return Promise.all([
+        p.persistWeatherP(persistOption),
+        {dataP: data}
+      ])
+
+    },
+    function(err){
+
+      if (err.code === "ENOENT"){
+        return Promise.all([
+          p.getTodaysWeatherP(option)
+        ])
+      }
+
+    }
+  )
+  .then(
+    function(data){
+      if (data && data.length){
+
+        if (hasTodaysWeather(data)){
+          const persistOption = getPersistOption(option, data)
+          return Promise.all([
+            p.persistWeatherP(persistOption),
+            {dataP: data}
+          ])
+        }
+
+        if (hasDataP(data)){
+          return Promise.all([
+            p.unlinkLastP(option),
+            {dataP: data}
+          ])
+        }
+
+        return "has no todays weather"
+
+      }
+
+      return "no data found no file saved or linked and no mail send"
+
+    },
+    function(err){
+      llog("step two error: openweathermap call", err)
+    }
+  )
+  .then(
+    function(data){
+      const mailBody = data;
+      return Promise.all([
+        p.linkLastP(option),
+        data[1]
+      ])
+    },
+    function(err){
+      llog("step three error", err)
+    }
+  )
+  .then(
+    function(data){
+      const fixedData = extractWeatherDiff(data[1].dataP[1].dataP);
+      return Promise.all([
+        p.doMailP(fixedData)
+      ])
+    },
+    function(err){
+      llog("step four error..", err);
+    }
+  )
+  .then(
+    function(data){
+      llog("final data..", data);
+      llog("time took... " + (Date.now().valueOf() - start.valueOf())/1000)
+    },
+    function(err){
+      llog("final error..", err);
+      llog("time took... " + (Date.now().valueOf() - start.valueOf())/1000)
+    }
+  )
+}
+
 
 //
 // business functions
 //
-function getDateTime(payload){
-  return payload.dt
-}
+function getYesterdaysWeather(option, cb){
 
-function getTemperature(payload){
-  return payload.main.temp
-}
+  !cb && (cb = noop)
 
-function getYesterdaysWeather(){
-  //llog("on getYesterdaysWeather")
+  const getYesterdaysWeatherArguments = arguments;
+  return fs.stat(option.lastDataFile, function(err, data){
+    if (err){
+      return cb(err)
+    }
 
-  const fname = getYesterdaysWeather.name
-  const lastFileName = dataDir + lastDataFile
+    return fs.readFile(option.lastDataFile, function(err, data){
 
-  readFromFile(lastFileName, getYesterdaysWeather, function(data){
-    const task = {};
-    task[fname] = JSON.parse(data.toString())
-    return doneTasks.push(task)
+      if (err){
+        const sheduled = failedTasks.filter(function(ft){return ft.name === getYesterdaysWeather.name }).length === 1;
+        !sheduled && failedTasks.push([getYesterdaysWeather, getYesterdaysWeatherArguments]);
+        return cb(err)
+      }
+
+      if(!err){
+        const taskData = {};
+        taskData[getYesterdaysWeather.name] = JSON.parse(data.toString())
+        doneTasks.push(taskData)
+        return cb(null, taskData)
+      }
+
+    })
+
   })
 
 }
 
-function getTodaysWeather(){
-  //llog("on getTodaysWeather")
+function getTodaysWeather(option, cb){
 
-  const req = http.request(options, httpResponseHandler);
+  !cb && (cb = noop)
 
-  req.on("error", httpErrorHandler);
+  const getTodaysWeatherArguments = arguments;
 
-  req.end();
+  const req = http.request(option.weatherUrl, function(res){
+
+    const data = [];
+
+    res.on("data", function(chunk){
+      data.push(chunk)
+    });
+
+    res.on("end", function(){
+
+      const res = data.reduce(function(bucket, buf){
+        return bucket.concat(buf.toString())
+      }, "");
+
+      const taskData = {};
+      taskData[getTodaysWeather.name] = JSON.parse(res.toString())
+
+      doneTasks.push(taskData)
+      return cb(null, taskData)
+
+    })
+
+  });
+
+  req.on("error", function(err){
+    const sheduled = failedTasks.filter(function(ft){return ft.name === getTodaysWeather.name }).length === 1;
+    !sheduled && failedTasks.push([getTodaysWeather, getTodaysWeatherArguments]);
+    return cb(err)
+  });
+
+  req.end()
 
 }
 
-function persistWeather(){
-  //llog("on persistWeather")
+function persistWeather(option, cb){
+
+  !cb && (cb = noop)
 
   const fname = persistWeather.name
-  const goodToGo = taskStatus(persistWeather);
+  const goodToGo = taskStatus(persistWeather, option);
 
   const weather = getWeatherData(goodToGo);
-  const nextFileName = dataDir + Date.now().valueOf() + dataFileBaseName
-
+  const nextFileName = option.nextLast
   if (goodToGo) {
     if (!weather["dt"]){
-      return failedTasks.push([persistWeather])
+      failedTasks.push([persistWeather, option])
+      return cb("payoad does not have a datetime")
     }
-    return writeToFile(nextFileName, weather, persistWeather)
+
+    return fs.writeFile(nextFileName, JSON.stringify(weather), function(err, data){
+
+      if (err){
+        const sheduled = failedTasks.filter(function(ft){return ft.name === fname }).length === 1
+        !sheduled && failedTasks.push([fn, option])
+        return cb(err)
+      }
+
+      if(!err){
+        const task = {};
+        task[fname] = {
+          filecontent: weather,
+          filename: nextFileName
+        }
+        doneTasks.push(task)
+        return cb(null, task)
+      }
+
+    })
+
   }
 
 }
 
-function compareWeather(){
-  //llog("on compareWeather")
+function compareWeather(option, cb){
 
+  !cb && (cb = noop)
   const fname = compareWeather.name
-  const goodToGo = taskStatus(compareWeather);
+  const goodToGo = taskStatus(compareWeather, option);
 
   if (goodToGo) {
     const task = {};
     task[fname] = extractWeatherDiff(goodToGo)
-    return doneTasks.push(task)
+    doneTasks.push(task)
+    return cb(null, task)
   }
 
-  return [fname, false, "not good to go"]
+  return cb("compareWeather failed")
 }
 
-function sendWeatherDiff(){
-  //llog("on sendWeather")
+function doMail(msg, cb){
 
-  const fname = sendWeatherDiff.name
-  const goodToGo = taskStatus(sendWeatherDiff);
+  !cb && (cb = noop)
+  const fname = doMail.name
 
-  if (goodToGo) {
+  const goodToGo = msg && msg.weatherDiff ? msg : taskStatus(doMail, msg);
 
-    return doMail(goodToGo[0], function(err, mailReceipt){
+  if (goodToGo){
+    const serializedMsg = JSON.stringify(goodToGo);
 
-      if (!err) {
+    if (BEARER.length > 0){
+      return sendMail(BEARER[0], serializedMsg, function(err, data){
+        if (err){
+          return cb(err)
+        }
         const task = {};
-        task[fname] = mailReceipt
+        task[fname] = goodToGo
         doneTasks.push(task)
-        return [fname, true]
-      }
-
-      const sheduled = failedTasks.filter(function(ft){return ft.name === fname }).length === 1
-      !sheduled && failedTasks.push([sendWeatherDiff])
-      return [fname, false, err]
-
-    })
-
-  }
-  return [fname, false, "not good to go"]
-}
-
-function updateLastWeatherLink(){
-  //llog("on updateLastWeatherLink")
-
-  const fname = updateLastWeatherLink.name
-  const goodToGo = taskStatus(updateLastWeatherLink);
-  if (goodToGo) {
-    const nextLastFile = goodToGo[0].persistWeather.filename;
-
-    return unlinkLast(updateLastWeatherLink, function(res){
-      if(res.err){
-        failedTasks.push(updateLastWeatherLink)
-        return [fname, false, res.err]
-      }
-      return linkLast(nextLastFile, updateLastWeatherLink, function(res){
-        if(res.err){
-          failedTasks.push(updateLastWeatherLink)
-          return [fname, false, res.err]
-        }
-
-        if(!toDoTasks[fname].isDone()){
-          const task = {};
-          task[fname] = {
-            nextLastFile: nextLastFile
-          }
-          doneTasks.push(task)
-          return [fname, true]
-        }
-
+        return cb(null, task)
       })
+    }
+
+    return encodeJWT(function(err, jwt){
+
+      if (!err){
+        return getBearer(jwt, function(err, bearer){
+
+          if (!err){
+            BEARER.push(JSON.parse(bearer).access_token)
+
+            return sendMail(BEARER[0], serializedMsg, function(err, data){
+              if (err){
+                return cb(err)
+              }
+              const task = {};
+              task[fname] = goodToGo
+              doneTasks.push(task)
+              return cb(null, task)
+            })
+          }
+
+          return cb("getBearer failed")
+
+        })
+
+      }
+
+      return cb("encodeJWT failed")
 
     })
 
   }
 
-  return [fname, false, "not good to go"]
+  return cb("doMail not good to go")
+}
+
+function unlinkLast(option, cb){
+
+  !cb && (cb = noop)
+  const fname = unlinkLast.name
+
+  return fs.stat(option.lastDataFile, function(err, data){
+
+    if(err){
+      return cb(err)
+    }
+
+    return fs.unlink(option.lastDataFile, function(err, data){
+      if(err){
+        return cb(err)
+      }
+      const task = {};
+      task[fname] = option
+      doneTasks.push(task)
+      return cb(null, task)
+    })
+  })
+
+}
+
+function linkLast(option, cb){
+
+  !cb && (cb = noop)
+  const fname = linkLast.name
+
+  return fs.symlink(option.link.nextLast, option.link.last, function(err, data){
+    if(err){
+      return cb(err)
+    }
+    const task = {};
+    task[fname] = option
+    doneTasks.push(task)
+    return cb(null, task)
+  })
+
 }
 
 
-statusCheck()
-statusCheckStarted = true;
+// command line option
+if (process.argv[2] === "p"){
+  promisedBrain(option)
+}else{
+  statusCheck(option)
+  statusCheckStarted = true;
+}
 
 // log end of pass zero
 startLogging = true
-
 // done

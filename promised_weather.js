@@ -1,3 +1,6 @@
+"use strict";
+
+
 const   URL = require("url").URL,
   http = require("http"),
   https = require("https"),
@@ -34,7 +37,7 @@ const weatheRawrUrl =  WEATHER_BASE_URL + "id=" +  CITYID + "&APPID=" + APIID,
   dataDir = process.cwd() + "/data/",
   lastDataFile = dataDir + "last" + dataFileBaseName,
   nextLast = dataDir + Date.now().valueOf() + dataFileBaseName,
-  subscribers = ["xelinorg@gmail.com", "alexg@projectbeagle.com"],
+  subscribers = ["xelinorg@gmail.com"],
   start = Date.now();
 
 const option = {
