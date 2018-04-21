@@ -1,3 +1,5 @@
 *.pem
 *_
 node_modules
+*.weather.json
+crypto/*.json
