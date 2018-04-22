@@ -1,16 +1,18 @@
 `weather-ping` is a utility algorithm that retrieves, compares, stores and forwards the temperature on a city given a city code. It is a command line utility and not a node module.
 
+This a POC work and it does not provide something meaningful and it could be used more for comparing and learning some scripting concepts. The g suite mailing functions could be prove useful though. 
+
 
 Inside the project root directory execute
 
 For promised flow run
 ```
-$ node promised_weather.js
+$ node index.js p IDENTITY_PATH=./crypto/alpha.json IAM_MAIL_IMPERSONATE=alpha@alpha.alpha APIID=5378492d8248683e1e16176d90e68731 CITYID=264371
 ```
 
 For the timeouted flow run
 ```
-$ node index.js
+$ node index.js IDENTITY_PATH=./crypto/alpha.json IAM_MAIL_IMPERSONATE=alpha@alpha.alpha APIID=5378492d8248683e1e16176d90e68731 CITYID=264371
 ```
 
 The code has been developed and tested using `node-v8.9.1`
@@ -22,15 +24,9 @@ The working authentication is implementing machine-2-machine logic and works wit
 There should be an `cron` entry as there is not build-in function to do
 the scheduling from within the algorithm.
 
-There is an issue with the data file inside the data directory.
-This issue remain for the timeouted version since on the promised one if does not find the file will create it.
+There is need for more/correct error handling on both flows and in general.
 
-So The `last.weather.json` has to be linked manually the first time or we will never
-get the comparison done and the email send or if the promised version run it gets linked with the result of that run.
-
-There is need for more/correct error handling on both versions.
-
-The initial thought was for a "pure node/third-party free" code. The target has been met but the code has to be modularized outside the main files.  
+The initial thought for a "pure node/third-party free" code has been met giving a big satisfaction to the author.  
 
 A sample cronjob entry could be this.
 
