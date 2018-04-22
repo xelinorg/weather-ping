@@ -15,26 +15,19 @@ const util = require("util"),
 //
 // g suite settings
 //
-const IDENTITY_PATH = path.normalize("./crypto/sysaaa-weather-ping-871c7f76d7d5.json"),
-  IAM_MAIL_IMPERSONATE = "alex@systemics.gr",
-  GS_SERVICE_ACCOUNT = "sysaaa@weather-ping.iam.gserviceaccount.com",
-  GSSCOPE = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose",
-  BEARER = [];
+const GSSCOPE = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose";
 
 //
 // openweathermap settings
 //
-const APIID = "5378492d8248683e1e16176d90e68731",
-  CITYID= "264371",
-  WEATHER_BASE_URL = "http://api.openweathermap.org/data/2.5/weather?",
-  weatherUrl =  WEATHER_BASE_URL + "id=" +  CITYID + "&APPID=" + APIID;
+const WEATHER_BASE_URL = "http://api.openweathermap.org/data/2.5/weather?";
 
 //
 // own variables
 //
 const start = Date.now(),
   millimit = 12000,
-  globalTimeOut = 500,
+  globalTimeOut = 33,
 
   doneTasks = [],
   failedTasks = [],
@@ -111,7 +104,9 @@ const option = {
   nextLast: nextLast,
   dataDir: dataDir,
   lastDataFile: lastDataFile,
-  weatherUrl: new URL(weatherUrl),
+  subscribers: ["xelinorg@gmail.com"],
+  GSSCOPE: GSSCOPE,
+  WEATHER_BASE_URL: WEATHER_BASE_URL,
   link: {
     nextLast: nextLast,
     last: lastDataFile
@@ -119,8 +114,7 @@ const option = {
 };
 
 let statusCheckStarted = false,
-  startLogging = false,
-  subscribers = ["xelinorg@gmail.com"];
+  startLogging = false;
 
 
 //
@@ -141,11 +135,15 @@ function getKeyFromIdentityMap(idenityMap){
   return JSON.parse(idenityMap.toString()).private_key
 }
 
-function getSubscribers(){
+function getClientEmailFromIdentityMap(idenityMap){
+  return JSON.parse(idenityMap.toString()).client_email
+}
+
+function getSubscribers(subscribers){
   return subscribers.reduce(function(bucket, bcc){
     bucket = bucket + ", <" + bcc + ">"
     return bucket
-  }, "<" + IAM_MAIL_IMPERSONATE + ">")
+  }, "")
 }
 
 function isDone(taskName){
@@ -239,8 +237,6 @@ function extractWeatherDiff(weatherPair){
   const oldWeather = flatPair["getYesterdaysWeather"]
   const newWeather = flatPair["getTodaysWeather"]
 
-  //llog(oldWeather, newWeather)
-
   const oldDt = getDateTime(oldWeather),
     newDt = getDateTime(newWeather),
     oldTemp = getTemperature(oldWeather),
@@ -311,20 +307,13 @@ function hasTodaysWeather(data){
       return true
     }
     return false
-  })
-  if (getTodaysWeather && getTodaysWeather.length > 0 && getTodaysWeather[0].getTodaysWeather){
+  });
+
+  if (getTodaysWeather.length > 0){
     return true
   }
-  return false
-}
 
-function dataToMailBody(data){
-  return data.filter(function(entry){
-    if (entry.dataP){
-      return true
-    }
-    return false
-  })[0].dataP || "weather-ping default mail"
+  return false
 }
 
 function llog(){
@@ -346,6 +335,7 @@ function llog(){
   })
 
 }
+
 
 //
 // mailing functions
@@ -371,12 +361,12 @@ function getIatExpPair(){
 
 }
 
-function getJwtDwdClaim(iatExpPair){
+function getJwtDwdClaim(iatExpPair, impersonate, serviceaccount, gsscope){
 
   const JWT_DWD_CLAIM = {
-    "iss": GS_SERVICE_ACCOUNT,
-    "sub": IAM_MAIL_IMPERSONATE,
-    "scope": GSSCOPE,
+    "iss": serviceaccount,
+    "sub": impersonate,
+    "scope": gsscope,
     "aud": "https://www.googleapis.com/oauth2/v4/token",
     "exp": iatExpPair.EXP,
     "iat": iatExpPair.IAT
@@ -385,44 +375,42 @@ function getJwtDwdClaim(iatExpPair){
   return JWT_DWD_CLAIM
 }
 
-function signJWT(token, cb) {
+function signJWT(identitypath, impersonate, gsscope, cb) {
 
-    var sign = crypto.createSign("RSA-SHA256");
-
-    fs.readFile(IDENTITY_PATH, function(err, data){
+    fs.readFile(identitypath, function(err, data){
 
       if (err){
         throw err
       }
 
-      sign.update(token);
-      return cb(sign.sign(getKeyFromIdentityMap(data), "base64"))
+      const sign = crypto.createSign("RSA-SHA256");
+
+      const iatExpPair = getIatExpPair(),
+        jwtBasePair = {
+          header: JWT_HEADER,
+          body: getJwtDwdClaim(iatExpPair, impersonate, getClientEmailFromIdentityMap(data), gsscope)
+        },
+        jwtBasePairEncoded = {};
+
+      Array.from(Object.entries(jwtBasePair)).reduce(function(bucket, item){
+        bucket[item[0]] = Buffer.from(JSON.stringify(item[1])).toString("base64");
+        return bucket
+      }, jwtBasePairEncoded);
+
+      const jwtBaseEncoded = jwtBasePairEncoded.header + "." + jwtBasePairEncoded.body;
+      sign.update(jwtBaseEncoded);
+
+      return cb(sign.sign(getKeyFromIdentityMap(data), "base64"), jwtBaseEncoded)
 
     })
 }
 
-function encodeJWT(cb){
+function encodeJWT(identitypath, impersonate, gsscope, cb){
 
-  const iatExpPair = getIatExpPair(),
-    jwtBasePair = {
-      header: JWT_HEADER,
-      body: getJwtDwdClaim(iatExpPair)
-    },
-    jwtBasePairEncoded = {};
-
-  Array.from(Object.entries(jwtBasePair)).reduce(function(bucket, item){
-    bucket[item[0]] = Buffer.from(JSON.stringify(item[1])).toString("base64");
-    return bucket
-  }, jwtBasePairEncoded);
-
-  const jwtBaseEncoded = jwtBasePairEncoded.header + "." + jwtBasePairEncoded.body;
-
-  return signJWT(jwtBaseEncoded, function(jwtBaseSigned){
-
+  return signJWT(identitypath, impersonate, gsscope, function(jwtBaseSigned, jwtBaseEncoded){
     const jwtSignedBase64EncodeUrl = Base64EncodeUrl(jwtBaseSigned.toString());
     const jwtFull = jwtBaseEncoded + "." + jwtSignedBase64EncodeUrl;
     cb(null, jwtFull)
-
   })
 
 }
@@ -471,15 +459,15 @@ function getBearer(jwtFull, cb){
 
 }
 
-function getMsg(body, ts){
+function getMsg(impersonate, subscribers, body, ts){
 
-  const msgTS = ts || (new Date(Date.now())).toUTCString()
+  const msgts = ts || (new Date(Date.now())).toUTCString()
 
-  const msg = "To: <" + IAM_MAIL_IMPERSONATE + ">" + "\n" +
-    "From: <" + IAM_MAIL_IMPERSONATE + ">" + "\n" +
-    "Bcc: " + getSubscribers() + "\n" +
+  const msg = "To: <" + impersonate + ">" + "\n" +
+    "From: <" + impersonate + ">" + "\n" +
+    "Bcc: " + getSubscribers(subscribers) + "\n" +
     "Subject: weather-ping" + "\n" +
-    "Date: " + msgTS + "\n" +
+    "Date: " + msgts + "\n" +
     "Content-Type: text/plain; charset=\"UTF-8\"" + "\n\n" +
 
     "This is the weather ping. And the diff is..." + "\n\n" +
@@ -492,28 +480,28 @@ function getMsg(body, ts){
 
 }
 
-function getMsgEncoded(msg){
+function getMsgEncoded(impersonate, subscribers, body, ts){
 
-  const tmpmsg = getMsg(msg);
+  const tmpmsg = getMsg(impersonate, subscribers, body, ts);
   const bufferedToBase64 = Buffer.from(tmpmsg).toString("base64");
 
   return Base64EncodeUrl(bufferedToBase64)
 
 }
 
-function sendMail(bearer, msg, cb) {
+function sendMail(option, cb) {
 
   const postData = {
-    raw: getMsgEncoded(msg)
+    raw: getMsgEncoded(option.IAM_MAIL_IMPERSONATE, option.subscribers, option.body)
   },
   dataSerialized = JSON.stringify(postData);
 
   const options = {
     hostname: "www.googleapis.com",
-    path: "/gmail/v1/users/" + IAM_MAIL_IMPERSONATE + "/messages/send?uploadType=multipart",
+    path: "/gmail/v1/users/" + option.IAM_MAIL_IMPERSONATE + "/messages/send?uploadType=multipart",
     method: "POST",
     headers: {
-      "Authorization": joinBearer(bearer),
+      "Authorization": joinBearer(option.BEARER),
       "Content-Type": "application/json"
     }
   };
@@ -587,7 +575,7 @@ function backToTheFuture(stack){
         return ft[0](ft[1])
       }
       return ft.length ===1 ? ft[0]() : 0x0
-    }, ftname === "statusCheck" ? 33 : 0)
+    }, ftname === "statusCheck" ? globalTimeOut : 0)
 
    timeoutHits.push([ftname, doLater])
 
@@ -685,7 +673,8 @@ function promisedBrain(option){
       const persistOption = getPersistOption(option, data);
       return Promise.all([
         p.persistWeatherP(persistOption),
-        {dataP: data}
+        p.unlinkLastP(option),
+        data
       ])
 
     },
@@ -701,27 +690,14 @@ function promisedBrain(option){
   )
   .then(
     function(data){
-      if (data && data.length){
+      const persistOption = getPersistOption(option, data)
 
-        if (hasTodaysWeather(data)){
-          const persistOption = getPersistOption(option, data)
-          return Promise.all([
-            p.persistWeatherP(persistOption),
-            {dataP: data}
-          ])
-        }
-
-        if (hasDataP(data)){
-          return Promise.all([
-            p.unlinkLastP(option),
-            {dataP: data}
-          ])
-        }
-
-        return "has no todays weather"
-
+      if (persistOption && (persistOption.data || data.length > 2)){
+        return Promise.all([
+          p.persistWeatherP(persistOption),
+          data[2] || data
+        ])
       }
-
       return "no data found no file saved or linked and no mail send"
 
     },
@@ -731,10 +707,9 @@ function promisedBrain(option){
   )
   .then(
     function(data){
-      const mailBody = data;
       return Promise.all([
         p.linkLastP(option),
-        data[1]
+        data
       ])
     },
     function(err){
@@ -743,9 +718,11 @@ function promisedBrain(option){
   )
   .then(
     function(data){
-      const fixedData = extractWeatherDiff(data[1].dataP[1].dataP);
+      option.msg = {
+        weatherDiff:extractWeatherDiff(data[1][1])
+      };
       return Promise.all([
-        p.doMailP(fixedData)
+        p.doMailP(option)
       ])
     },
     function(err){
@@ -781,8 +758,6 @@ function getYesterdaysWeather(option, cb){
     return fs.readFile(option.lastDataFile, function(err, data){
 
       if (err){
-        const sheduled = failedTasks.filter(function(ft){return ft.name === getYesterdaysWeather.name }).length === 1;
-        !sheduled && failedTasks.push([getYesterdaysWeather, getYesterdaysWeatherArguments]);
         return cb(err)
       }
 
@@ -846,19 +821,16 @@ function persistWeather(option, cb){
   const fname = persistWeather.name
   const goodToGo = taskStatus(persistWeather, option);
 
-  const weather = getWeatherData(goodToGo);
-  const nextFileName = option.nextLast
-  if (goodToGo) {
+  if (goodToGo && goodToGo.length > 0) {
+    const weather = getWeatherData(goodToGo);
+    const nextFileName = option.nextLast
     if (!weather["dt"]){
-      failedTasks.push([persistWeather, option])
       return cb("payoad does not have a datetime")
     }
 
     return fs.writeFile(nextFileName, JSON.stringify(weather), function(err, data){
 
       if (err){
-        const sheduled = failedTasks.filter(function(ft){return ft.name === fname }).length === 1
-        !sheduled && failedTasks.push([fn, option])
         return cb(err)
       }
 
@@ -894,18 +866,18 @@ function compareWeather(option, cb){
   return cb("compareWeather failed")
 }
 
-function doMail(msg, cb){
+function doMail(option, cb){
 
   !cb && (cb = noop)
   const fname = doMail.name
 
-  const goodToGo = msg && msg.weatherDiff ? msg : taskStatus(doMail, msg);
+  const goodToGo = option.msg && option.msg.weatherDiff ? option.msg : taskStatus(doMail, option);
 
   if (goodToGo){
-    const serializedMsg = JSON.stringify(goodToGo);
+    option.body = JSON.stringify(goodToGo);
 
-    if (BEARER.length > 0){
-      return sendMail(BEARER[0], serializedMsg, function(err, data){
+    if (option.BEARER){
+      return sendMail(option, function(err, data){
         if (err){
           return cb(err)
         }
@@ -916,15 +888,13 @@ function doMail(msg, cb){
       })
     }
 
-    return encodeJWT(function(err, jwt){
+    return encodeJWT(option.IDENTITY_PATH, option.IAM_MAIL_IMPERSONATE, option.GSSCOPE, function(err, jwt){
 
       if (!err){
         return getBearer(jwt, function(err, bearer){
-
           if (!err){
-            BEARER.push(JSON.parse(bearer).access_token)
-
-            return sendMail(BEARER[0], serializedMsg, function(err, data){
+            option.BEARER = JSON.parse(bearer).access_token
+            return sendMail(option, function(err, data){
               if (err){
                 return cb(err)
               }
@@ -992,13 +962,53 @@ function linkLast(option, cb){
 }
 
 
-// command line option
-if (process.argv[2] === "p"){
-  promisedBrain(option)
-}else{
-  statusCheck(option)
-  statusCheckStarted = true;
+//
+// boot process
+//
+function setBootOps(option, requiredBootOpts, realBootops){
+
+  return requiredBootOpts.filter(function(opt){
+    const foundOpt = realBootops[opt];
+    if (foundOpt){
+      option[opt] = foundOpt;
+      return true
+    }
+    return false
+  }).length === requiredBootOpts.length
+
 }
+
+const requiredBootOpts = [
+  "IDENTITY_PATH",
+  "IAM_MAIL_IMPERSONATE",
+  "APIID",
+  "CITYID"
+];
+
+const realBootops = process.argv.reduce(function(ops, op){
+  const keyVal = op.split("=");
+  if(keyVal){
+    ops[keyVal[0]] = keyVal[1];
+  }
+  return ops
+}, {})
+
+if (setBootOps(option, requiredBootOpts, realBootops)){
+
+  const weatherUrl = option.WEATHER_BASE_URL + "id=" +  option.CITYID + "&APPID=" + option.APIID;
+  option.weatherUrl = new URL(weatherUrl);
+
+  if (process.argv[2] === "p"){
+    promisedBrain(option)
+  }else{
+    statusCheck(option);
+    statusCheckStarted = true
+  }
+
+} else {
+  llog("required options not provided")
+}
+
 
 // log end of pass zero
 startLogging = true
